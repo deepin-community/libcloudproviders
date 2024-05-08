@@ -31,8 +31,6 @@ struct _CloudProvidersProviderExporter
   CloudProvidersDbusProvider *skeleton;
   GDBusConnection *bus;
   GDBusObjectManagerServer *manager;
-  gchar *manager_bus_name;
-  gchar *manager_bus_path;
 
   gchar *bus_name;
   gchar *bus_path;
@@ -40,7 +38,6 @@ struct _CloudProvidersProviderExporter
 
   gchar *name;
   GList *accounts;
-  GVariant *dbus_accounts;
 };
 
 G_DEFINE_TYPE (CloudProvidersProviderExporter, cloud_providers_provider_exporter, G_TYPE_OBJECT)
@@ -71,7 +68,7 @@ static GParamSpec *properties [N_PROPS];
 static void
 export_provider (CloudProvidersProviderExporter *self)
 {
-    CloudProvidersDbusObjectSkeleton *provider_object_skeleton;
+    g_autoptr(CloudProvidersDbusObjectSkeleton) provider_object_skeleton = NULL;
 
     provider_object_skeleton = cloud_providers_dbus_object_skeleton_new (self->provider_bus_path);
     cloud_providers_dbus_object_skeleton_set_provider (provider_object_skeleton, self->skeleton);
@@ -88,7 +85,7 @@ export_account (CloudProvidersProviderExporter *self,
 {
     CloudProvidersDbusAccount *account_skeleton;
     const gchar *account_object_path;
-    CloudProvidersDbusObjectSkeleton *account_object_skeleton;
+    g_autoptr(CloudProvidersDbusObjectSkeleton) account_object_skeleton = NULL;
 
     account_object_path = cloud_providers_account_exporter_get_object_path (account);
     account_skeleton = cloud_providers_account_exporter_get_skeleton (account);
@@ -118,7 +115,7 @@ unexport_account(CloudProvidersProviderExporter *self,
  *
  * Each cloud provider can have a variety of account associated with it. Use this
  * function to add the accounts the user set up. This function is currently only internal,
- * as we do automation for hte dbus handling for adding and exporting an account.
+ * as we do automation for the dbus handling for adding and exporting an account.
  * This is handled in cloud_providers_account_exporter_new().
  */
 void
@@ -205,7 +202,7 @@ cloud_providers_provider_exporter_set_property (GObject      *object,
         case PROP_NAME:
         {
             g_free (self->name);
-            self->name = g_strdup (g_value_get_string (value));
+            self->name = g_value_dup_string (value);
             g_debug ("setting name %s\n", self->name);
             cloud_providers_dbus_provider_set_name (self->skeleton, self->name);
         }
@@ -214,21 +211,21 @@ cloud_providers_provider_exporter_set_property (GObject      *object,
         case PROP_BUS_NAME:
         {
             g_return_if_fail (self->bus_name == NULL);
-            self->bus_name = g_strdup (g_value_get_string (value));
+            self->bus_name = g_value_dup_string (value);
         }
         break;
 
         case PROP_BUS_PATH:
         {
             g_return_if_fail (self->bus_path == NULL);
-            self->bus_path = g_strdup (g_value_get_string (value));
+            self->bus_path = g_value_dup_string (value);
         }
         break;
 
         case PROP_BUS:
         {
             g_return_if_fail (self->bus == NULL);
-            self->bus = g_object_ref (g_value_get_object (value));
+            self->bus = g_value_dup_object (value);
         }
         break;
 
@@ -240,22 +237,31 @@ cloud_providers_provider_exporter_set_property (GObject      *object,
 }
 
 static void
+cloud_providers_provider_exporter_dispose (GObject *object)
+{
+    CloudProvidersProviderExporter *self = (CloudProvidersProviderExporter *)object;
+
+    g_clear_object (&self->skeleton);
+    g_clear_object (&self->manager);
+    g_clear_object (&self->bus);
+
+    g_list_free_full (self->accounts, g_object_unref);
+    self->accounts = NULL;
+
+    G_OBJECT_CLASS (cloud_providers_provider_exporter_parent_class)->dispose (object);
+}
+
+static void
 cloud_providers_provider_exporter_finalize (GObject *object)
 {
-  CloudProvidersProviderExporter *self = (CloudProvidersProviderExporter *)object;
+    CloudProvidersProviderExporter *self = (CloudProvidersProviderExporter *)object;
 
-    g_debug ("finalize provider");
-  g_clear_object (&self->skeleton);
-  g_clear_object (&self->bus);
-  g_free (self->bus_name);
-  g_free (self->bus_path);
-  g_free (self->provider_bus_path);
-  g_clear_object (&self->manager);
-  g_free (self->name);
+    g_clear_pointer (&self->bus_name, g_free);
+    g_clear_pointer (&self->bus_path, g_free);
+    g_clear_pointer (&self->provider_bus_path, g_free);
+    g_clear_pointer (&self->name, g_free);
 
-  g_list_free_full (self->accounts, g_object_unref);
-
-  G_OBJECT_CLASS (cloud_providers_provider_exporter_parent_class)->finalize (object);
+    G_OBJECT_CLASS (cloud_providers_provider_exporter_parent_class)->finalize (object);
 }
 
 static void
@@ -279,12 +285,12 @@ cloud_providers_provider_exporter_init (CloudProvidersProviderExporter *self)
 static void
 cloud_providers_provider_exporter_class_init (CloudProvidersProviderExporterClass *klass)
 {
-  GObjectClass *object_class = G_OBJECT_CLASS (klass);
-
-  object_class->set_property = cloud_providers_provider_exporter_set_property;
-  object_class->get_property = cloud_providers_provider_exporter_get_property;
-  object_class->constructed = cloud_providers_provider_exporter_constructed;
-  object_class->finalize = cloud_providers_provider_exporter_finalize;
+    GObjectClass *object_class = G_OBJECT_CLASS (klass);
+    object_class->set_property = cloud_providers_provider_exporter_set_property;
+    object_class->get_property = cloud_providers_provider_exporter_get_property;
+    object_class->constructed = cloud_providers_provider_exporter_constructed;
+    object_class->dispose = cloud_providers_provider_exporter_dispose;
+    object_class->finalize = cloud_providers_provider_exporter_finalize;
 
     properties [PROP_NAME] =
         g_param_spec_string ("name",
@@ -293,9 +299,6 @@ cloud_providers_provider_exporter_class_init (CloudProvidersProviderExporterClas
                              NULL,
                              (G_PARAM_READWRITE |
                               G_PARAM_STATIC_STRINGS));
-    g_object_class_install_property (object_class, PROP_NAME,
-                                     properties [PROP_NAME]);
-
     properties [PROP_BUS_NAME] =
         g_param_spec_string ("bus-name",
                              "BusName",
@@ -304,9 +307,6 @@ cloud_providers_provider_exporter_class_init (CloudProvidersProviderExporterClas
                              (G_PARAM_READWRITE |
                               G_PARAM_STATIC_STRINGS |
                               G_PARAM_CONSTRUCT_ONLY));
-    g_object_class_install_property (object_class, PROP_BUS_NAME,
-                                     properties [PROP_BUS_NAME]);
-
     properties [PROP_BUS_PATH] =
         g_param_spec_string ("bus-path",
                              "BusPath",
@@ -315,8 +315,6 @@ cloud_providers_provider_exporter_class_init (CloudProvidersProviderExporterClas
                              (G_PARAM_READWRITE |
                               G_PARAM_STATIC_STRINGS |
                               G_PARAM_CONSTRUCT_ONLY));
-    g_object_class_install_property (object_class, PROP_BUS_PATH,
-                                     properties [PROP_BUS_PATH]);
 
     properties [PROP_BUS] =
         g_param_spec_object ("bus",
@@ -326,8 +324,9 @@ cloud_providers_provider_exporter_class_init (CloudProvidersProviderExporterClas
                              (G_PARAM_READWRITE |
                               G_PARAM_STATIC_STRINGS |
                               G_PARAM_CONSTRUCT_ONLY));
-    g_object_class_install_property (object_class, PROP_BUS,
-                                     properties [PROP_BUS]);
+    g_object_class_install_properties (object_class,
+                                       N_PROPS,
+                                       properties);
 }
 
 void
@@ -344,8 +343,8 @@ cloud_providers_provider_exporter_get_name (CloudProvidersProviderExporter *self
 }
 
 /**
- * cloud_providers_provider_exporter_new:
- * @bus: A #GDbusConnection to export the objects to
+ * cloud_providers_provider_exporter_new
+ * @bus: A #GDBusConnection to export the objects to
  * @bus_name: A DBus name to bind to
  * @bus_path: A DBus object path
  */
@@ -376,4 +375,3 @@ cloud_providers_provider_exporter_get_object_path (CloudProvidersProviderExporte
 {
     return self->bus_path;
 }
-    
